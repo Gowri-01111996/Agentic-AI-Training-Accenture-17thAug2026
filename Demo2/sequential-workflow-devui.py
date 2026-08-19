@@ -1,5 +1,3 @@
-### Updated Program ####
-
 """
 Sequential Workflow with MAF and Microsoft Foundry
 
@@ -7,9 +5,7 @@ This script demonstrates a simple sequential workflow:
 1. Researcher Agent gathers information on a topic.
 2. Writer Agent writes an essay based on the research.
 
-FIXED: migrated from the old `agent_framework.azure.AzureAIClient` (removed as of
-Agent Framework 1.2.0) to the current `agent_framework.foundry.FoundryChatClient`.
-See: https://learn.microsoft.com/en-us/agent-framework/agents/providers/microsoft-foundry
+
 
 To run:
     pip install --upgrade agent-framework-foundry azure-identity python-dotenv
@@ -70,15 +66,21 @@ chat_client = FoundryChatClient(
 )
 
 
-async def run_agent_with_retry(agent: Agent, message, *, max_tokens: int = 800):
-    """Run an agent and wait/retry when Azure returns a transient rate limit."""
+async def run_agent_with_retry(agent: Agent, message, *, max_tokens: int = 100):
+    """Run an agent and wait/retry when Azure returns a transient rate limit.
+
+    NOTE: `max_tokens` is a keyword on THIS wrapper function, not on
+    `Agent.run()`. The current agent_framework API expects generation
+    settings (max_tokens, temperature, etc.) to be passed via the `options`
+    parameter as a ChatOptions-style dict, not as a direct kwarg to run().
+    """
     max_attempts = int(os.getenv("AGENT_RETRY_ATTEMPTS", "5"))
     if max_attempts < 1:
         raise ValueError("AGENT_RETRY_ATTEMPTS must be >= 1")
 
     for attempt in range(max_attempts):
         try:
-            return await agent.run(message, max_tokens=max_tokens)
+            return await agent.run(message, options={"max_tokens": max_tokens})
         except Exception as exc:
             error_text = str(exc).lower()
             is_rate_limit = (
