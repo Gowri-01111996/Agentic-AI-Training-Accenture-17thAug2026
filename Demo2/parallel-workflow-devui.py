@@ -2,6 +2,8 @@
 
 This sample demonstrates a multi-agent workflow for vacation planning using the Microsoft Agent Framework.
 Agents include: Location Picker, Destination Recommender, Weather, Cuisine Suggestion, and Itinerary Planner.
+
+
 """
 
 import os
@@ -91,9 +93,25 @@ class LazyFoundryAgent:
             # `instructions` field is used. Put the role guidance in the input
             # instead, which is supported reliably by the deployed model.
             input=f"Instructions:\n{self.agent_instructions}\n\nUser request:\n{message}",
+            max_output_tokens=max_tokens,
+            # gpt-5 is a reasoning model: hidden reasoning tokens are billed
+            # against max_output_tokens. Keep effort low so the budget goes
+            # toward the visible answer instead of being silently consumed
+            # by reasoning, and force a plain-text message item so the
+            # response always contains user-visible output.
+            reasoning={"effort": "low"},
+            text={"format": {"type": "text"}},
         )
         if not response.output_text:
-            raise RuntimeError(f"{self.agent_name} returned an empty response")
+            # Surface *why* it was empty instead of a bare RuntimeError, so
+            # future failures are diagnosable without re-running with prints.
+            status = getattr(response, "status", "unknown")
+            incomplete = getattr(response, "incomplete_details", None)
+            raise RuntimeError(
+                f"{self.agent_name} returned an empty response "
+                f"(status={status}, incomplete_details={incomplete}, "
+                f"max_tokens={max_tokens})"
+            )
         return response.output_text
 
 
@@ -110,7 +128,9 @@ class LocationSelectorExecutor(Executor):
 
     @handler
     async def handle(self, user_query: str, ctx: WorkflowContext[dict[str, str]]) -> None:
-        response = await run_agent_with_retry(self.agent, user_query, max_tokens=500)
+        # Bumped from 500 -> 800: at 500, gpt-5's default reasoning effort
+        # could consume the whole budget and leave nothing for the answer.
+        response = await run_agent_with_retry(self.agent, user_query, max_tokens=800)
         # Keep the original request with the selected location. The downstream
         # agents and the final planner need both pieces of context.
         await ctx.send_message({
@@ -129,7 +149,7 @@ class DestinationRecommenderExecutor(Executor):
             f"Original trip request:\n{trip_context['user_query']}\n\n"
             f"Selected destination:\n{trip_context['location']}"
         )
-        response = await run_agent_with_retry(self.agent, prompt, max_tokens=500)
+        response = await run_agent_with_retry(self.agent, prompt, max_tokens=700)
         await ctx.send_message({**trip_context, "specialist": "Destination", "result": str(response)})
 
 class WeatherExecutor(Executor):
@@ -143,7 +163,7 @@ class WeatherExecutor(Executor):
             f"Original trip request:\n{trip_context['user_query']}\n\n"
             f"Selected destination:\n{trip_context['location']}"
         )
-        response = await run_agent_with_retry(self.agent, prompt, max_tokens=450)
+        response = await run_agent_with_retry(self.agent, prompt, max_tokens=650)
         await ctx.send_message({**trip_context, "specialist": "Weather", "result": str(response)})
 
 class CuisineSuggestionExecutor(Executor):
@@ -157,7 +177,7 @@ class CuisineSuggestionExecutor(Executor):
             f"Original trip request:\n{trip_context['user_query']}\n\n"
             f"Selected destination:\n{trip_context['location']}"
         )
-        response = await run_agent_with_retry(self.agent, prompt, max_tokens=500)
+        response = await run_agent_with_retry(self.agent, prompt, max_tokens=700)
         await ctx.send_message({**trip_context, "specialist": "Cuisine", "result": str(response)})
 
 class ItineraryPlannerExecutor(Executor):
@@ -187,7 +207,7 @@ class ItineraryPlannerExecutor(Executor):
             "Create the requested itinerary now. Do not ask the user to paste notes or provide more details; "
             "make reasonable assumptions when a specialist note is unavailable."
         )
-        response = await run_agent_with_retry(self.agent, planning_brief, max_tokens=900)
+        response = await run_agent_with_retry(self.agent, planning_brief, max_tokens=1200)
         # yield_output marks this value as the workflow's final result.
         await ctx.yield_output(str(response))
 
@@ -261,12 +281,15 @@ def build_workflow():
 
     # Data flow:
     # user -> location selector -> three concurrent specialists -> itinerary.
+    # NOTE: as of the current agent_framework, start_executor is a required
+    # keyword-only constructor argument on WorkflowBuilder — the old fluent
+    # .set_start_executor(...) method has been removed in favor of this.
     workflow = (
         WorkflowBuilder(
             name="Vacation Planner Workflow",
-            description="Multi-agent workflow for vacation planning with recommendations and itinerary."
+            description="Multi-agent workflow for vacation planning with recommendations and itinerary.",
+            start_executor=location_selector_executor,
         )
-        .set_start_executor(location_selector_executor)
         # Fan-out starts independent branches from the same location message.
         .add_fan_out_edges(location_selector_executor, [
             destination_recommender_executor,
@@ -299,9 +322,11 @@ def main():
     logger.info("Entity ID: workflow_vacation_planner")
 
     workflow = build_workflow()
-    # DevUI provides an interactive browser client. Tracing records each node
-    # and agent call so the execution can be inspected.
-    serve(entities=[workflow], port=devui_port, auto_open=True, tracing_enabled=True)
+    # DevUI provides an interactive browser client. instrumentation_enabled
+    # records each node and agent call so the execution can be inspected
+    # (this kwarg was renamed from `tracing_enabled` in the current
+    # agent_framework_devui version).
+    serve(entities=[workflow], port=devui_port, auto_open=True, instrumentation_enabled=True)
 
 if __name__ == "__main__":
     # This guard runs main only when the file is executed directly.
@@ -318,4 +343,3 @@ if __name__ == "__main__":
 #I want 3-day trip in Europe during winter. Include destination ideas, weather, cuisine, and itinerary.
 
 #Suggest a budget-friendly solo travel plan for 6 days. I like history, street food, and walkable cities.
-
