@@ -12,6 +12,11 @@ To run:
     python sequential_workflow.py
 """
 
+## if any agent_framework related errors - please run below commands  
+## pip uninstall -y agent-framework agent-framework-core agent-framework-azure-ai agent-framework-foundry agent-framework-devui azure-ai-projects azure-ai-agents
+#pip install --upgrade --pre agent-framework
+##
+
 import os
 import asyncio
 import logging
